@@ -2,6 +2,8 @@ package scheduler
 
 import (
 	"context"
+	"fmt"
+	"sync"
 
 	"github.com/shikro/osmodel/task"
 )
@@ -11,26 +13,36 @@ type Processor interface {
 }
 
 const (
-	prioritiesCount = 4
+	PrioritiesCount = 4
+	maxTasks        = 100
 )
 
 type Scheduler struct {
 	processor       Processor
+	event           func() chan struct{}
 	curTaskPriority int
+	tasksCountMu    sync.RWMutex
+	tasksCount      uint
 	queues          [][]task.Task
+	waitingQueue    []task.Task
 	newTask         chan task.Task
 	retakeTask      chan task.Task
-	needTask        chan struct{}
+	taskDone        chan struct{}
+	taskWaiting     chan task.Task
 }
 
-func New() *Scheduler {
+func New(e func() chan struct{}) *Scheduler {
 	return &Scheduler{
 		processor:       nil,
-		curTaskPriority: prioritiesCount,
-		queues:          make([][]task.Task, prioritiesCount),
+		event:           e,
+		curTaskPriority: PrioritiesCount,
+		tasksCount:      0,
+		queues:          make([][]task.Task, PrioritiesCount),
+		waitingQueue:    make([]task.Task, 0),
 		newTask:         make(chan task.Task),
-		retakeTask:      make(chan task.Task),
-		needTask:        make(chan struct{}),
+		retakeTask:      make(chan task.Task, 1),
+		taskDone:        make(chan struct{}, 1),
+		taskWaiting:     make(chan task.Task, 1),
 	}
 }
 
@@ -56,28 +68,64 @@ func (s *Scheduler) Start(ctx context.Context) {
 				s.queues[p] = append(s.queues[p], nil)
 				copy(s.queues[p][1:], s.queues[p])
 				s.queues[p][0] = task
-			case <-s.needTask:
-				s.curTaskPriority = prioritiesCount
+			case task := <-s.taskWaiting:
+				s.curTaskPriority = PrioritiesCount
+				s.waitingQueue = append(s.waitingQueue, task)
 				t := s.selectTask()
 				if t != nil {
 					s.curTaskPriority = t.Priority()
 					s.processor.ExecuteTask(t)
+				}
+			case <-s.taskDone:
+				s.curTaskPriority = PrioritiesCount
+				t := s.selectTask()
+				if t != nil {
+					s.curTaskPriority = t.Priority()
+					s.processor.ExecuteTask(t)
+				}
+			case <-s.event():
+				if len(s.waitingQueue) > 0 {
+					task := s.waitingQueue[0]
+					s.waitingQueue = s.waitingQueue[1:]
+					p := task.Priority()
+					s.queues[p] = append(s.queues[p], nil)
+					copy(s.queues[p][1:], s.queues[p])
+					s.queues[p][0] = task
+					fmt.Printf("%s awaken\n", task.ID())
+
+					t := s.selectTask()
+					if t != nil {
+						s.curTaskPriority = t.Priority()
+						s.processor.ExecuteTask(t)
+					}
 				}
 			}
 		}
 	}()
 }
 
-func (s *Scheduler) ScheldueTask(task task.Task, new bool) {
-	if new {
-		s.newTask <- task
-	} else {
-		s.retakeTask <- task
+func (s *Scheduler) ScheldueTask(t task.Task) error {
+	s.tasksCountMu.Lock()
+	if s.tasksCount >= maxTasks {
+		return fmt.Errorf("max task count reached")
 	}
+	s.tasksCount++
+	s.tasksCountMu.Unlock()
+
+	s.newTask <- t
+	return nil
 }
 
-func (s *Scheduler) TaskReady() {
-	s.needTask <- struct{}{}
+func (s *Scheduler) RetakeTask(t task.Task) {
+	s.retakeTask <- t
+}
+
+func (s *Scheduler) TaskDone() {
+	s.taskDone <- struct{}{}
+}
+
+func (s *Scheduler) TaskWaiting(t task.Task) {
+	s.taskWaiting <- t
 }
 
 func (s *Scheduler) selectTask() task.Task {

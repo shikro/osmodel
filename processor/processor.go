@@ -7,8 +7,9 @@ import (
 )
 
 type Scheduler interface {
-	ScheldueTask(task task.Task, new bool)
-	TaskReady()
+	RetakeTask(task task.Task)
+	TaskDone()
+	TaskWaiting(task task.Task)
 }
 
 type Processor struct {
@@ -37,7 +38,7 @@ func (p *Processor) Start(ctx context.Context) {
 				return
 			case newTask := <-p.newTask:
 				if p.task != nil && !p.task.Finished() {
-					p.scheduler.ScheldueTask(p.task, false)
+					p.scheduler.RetakeTask(p.task)
 				}
 				p.task = newTask
 			default:
@@ -45,7 +46,12 @@ func (p *Processor) Start(ctx context.Context) {
 					p.task.DoWork()
 					if p.task.Finished() {
 						p.task = nil
-						p.scheduler.TaskReady()
+						p.scheduler.TaskDone()
+					} else if extTask, ok := p.task.(task.ExtendedTask); ok {
+						if extTask.Wait() {
+							p.task = nil
+							p.scheduler.TaskWaiting(extTask)
+						}
 					}
 				}
 			}

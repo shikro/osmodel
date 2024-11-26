@@ -19,8 +19,11 @@ func New(wg *sync.WaitGroup) *TaskGenerator {
 	}
 }
 
-func (t *TaskGenerator) Next() *task.SimpleTask {
+func (t *TaskGenerator) Next() task.Task {
 	t.wg.Add(1)
 	t.counter++
-	return task.NewSimpleTask(fmt.Sprintf("task-%d", t.counter), 5, rand.IntN(4), t.wg)
+	if rand.IntN(100) < 50 {
+		return task.NewTaskWithWait(fmt.Sprintf("ext-task-%d", t.counter), 5, rand.IntN(4), t.wg)
+	}
+	return task.NewSimpleTask(fmt.Sprintf("smp-task-%d", t.counter), 5, rand.IntN(4), t.wg)
 }
