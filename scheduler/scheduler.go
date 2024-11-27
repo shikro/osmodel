@@ -3,7 +3,6 @@ package scheduler
 import (
 	"context"
 	"fmt"
-	"sync"
 
 	"github.com/shikro/osmodel/task"
 )
@@ -14,14 +13,12 @@ type Processor interface {
 
 const (
 	PrioritiesCount = 4
-	maxTasks        = 100
 )
 
 type Scheduler struct {
 	processor       Processor
 	event           func() chan struct{}
 	curTaskPriority int
-	tasksCountMu    sync.RWMutex
 	tasksCount      uint
 	queues          [][]task.Task
 	waitingQueue    []task.Task
@@ -104,16 +101,8 @@ func (s *Scheduler) Start(ctx context.Context) {
 	}()
 }
 
-func (s *Scheduler) ScheldueTask(t task.Task) error {
-	s.tasksCountMu.Lock()
-	if s.tasksCount >= maxTasks {
-		return fmt.Errorf("max task count reached")
-	}
-	s.tasksCount++
-	s.tasksCountMu.Unlock()
-
+func (s *Scheduler) ScheldueTask(t task.Task) {
 	s.newTask <- t
-	return nil
 }
 
 func (s *Scheduler) RetakeTask(t task.Task) {
